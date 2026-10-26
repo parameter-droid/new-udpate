@@ -356,7 +356,7 @@ const levelChunks=[],levelLights=[];
 const CHUNK=10,CHUNK_N=13,CHUNK_X0=-65;
 let buildingTrain=false,MAP=null;
 const trainLocalCols=[],doorPanels=[],hangers=[],trainWheels=[],carBounds=[];
-const train={phase:'idle',x:-90,v:0,timer:0,doors:0,accel:0,docked:false,rideT:0,fade:0,cool:0};
+const train={phase:'idle',x:-90,v:0,spd:0,carry:false,jump:false,timer:0,doors:0,accel:0,docked:false,rideT:0,fade:0,cool:0};
 function chunkFor(x){
   const i=clamp(Math.floor((x-CHUNK_X0)/CHUNK),0,CHUNK_N-1);
   let g=levelChunks[i];
@@ -1827,18 +1827,18 @@ function setFade(v){$('fade').style.opacity=v;}
 function summonTrain(){
   if(train.phase!=='idle')return;
   train.mode='board';train.phase='incoming';
-  train.x=-96;trainGroup.position.x=-96;train.v=0;train.doors=0;train.doorTarget=0;train.timer=0;train.docked=false;train.ride=false;
+  train.x=-96;trainGroup.position.x=-96;train.v=0;train.spd=0;train.carry=false;train.doors=0;train.doorTarget=0;train.timer=0;train.docked=false;train.ride=false;
   notify('LAST TRAIN INBOUND — GET TO THE PLATFORM','good',4.4);
   banner('LAST TRAIN','ARRIVING AT PLATFORM');
   sfx('horn',0);
 }
 function beginLeave(withPlayer){
-  train.phase='leaving';train.ride=withPlayer;train.leaveT=0;train.v=0;
+  train.phase='leaving';train.ride=withPlayer;train.leaveT=0;train.v=0;train.spd=0;train.carry=withPlayer;
   train.doorTarget=0;train.docked=false;sfx('doors',0);
   if(withPlayer)notify('DEPARTING — HOLD ON','good',3.4);
 }
 function leaveBehind(){
-  train.phase='leaving';train.ride=false;train.leaveT=0;train.v=0;train.doorTarget=0;train.docked=false;
+  train.phase='leaving';train.ride=false;train.leaveT=0;train.v=0;train.spd=0;train.carry=false;train.doorTarget=0;train.docked=false;
   notify('THE TRAIN IS LEAVING WITHOUT YOU','bad',3);
   player.hp=0;die('The last train pulled out. There is no other service tonight.');
 }
@@ -1846,7 +1846,7 @@ function swapLevel(){
   const n=MAP_BUILDERS.length;
   const next=(levelIndex+1+((Math.random()*(n-1))|0))%n;
   train.phase='incoming';train.mode='newstation';
-  train.x=-72;trainGroup.position.x=-72;train.v=10;train.doors=0;train.doorTarget=0;train.docked=false;train.timer=0;train.ride=false;
+  train.x=-72;trainGroup.position.x=-72;train.v=10;train.spd=12;train.carry=true;train.jump=true;train.doors=0;train.doorTarget=0;train.docked=false;train.timer=0;train.ride=false;
   trainColStart=0;
   loadLevel(next);
   trainColStart=colliders.length;
@@ -1892,16 +1892,17 @@ function updateTrain(dt){
         player.pos.set(train.x+1.4,0,-3.4);player.vel.set(0,0,0);
         notify('YOU STEP OFF AS THE DOORS CLOSE','good',3);
       }
+      train.carry=false;
       beginLeave(false);
     }
   }else if(train.phase==='leaving'){
     train.leaveT+=dt;
-    if(train.leaveT>.9){train.v=Math.min(26,train.v+5.2*dt);train.x-=train.v*dt;}
+    if(train.leaveT>.9){train.spd=Math.min(26,train.spd+5.2*dt);train.x-=train.spd*dt;}
     if(train.ride){
       if(train.leaveT>1.4)setFade('1');
       if(train.leaveT>2.1)swapLevel();
-    }else if(train.x<-80){
-      train.phase='idle';train.v=0;train.x=-96;trainGroup.position.x=-96;colliders.length=trainColStart;
+    }else if(train.x<-80||train.leaveT>16){
+      train.phase='idle';train.v=0;train.spd=0;train.carry=false;train.x=-96;trainGroup.position.x=-96;colliders.length=trainColStart;
     }
   }
   trainGroup.position.x=train.x;
@@ -1918,11 +1919,12 @@ function updateTrain(dt){
     h.g.rotation.z=damp(h.g.rotation.z,lean+Math.sin(gameTime*2.1+h.seed)*.05,4.5,dt);
     h.g.rotation.x=damp(h.g.rotation.x,Math.sin(gameTime*1.6+h.seed*1.7)*.055+clamp(train.v*.005,-.18,.18),4,dt);
   }
-  if(train.phase==='leaving'&&train.ride){
-    const lx=player.pos.x-prevX;
-    const inside=player.pos.z<-4.16&&player.pos.z>-7.02&&carBounds.some(b=>lx>b.x0&&lx<b.x1);
-    if(inside)player.pos.x+=train.x-prevX;
-  }
+  if(train.carry&&train.phase!=='idle'){
+    /* the carriage is the passenger's world frame; stepping out of it ends the ride */
+    if(player.pos.z>-4.16||player.pos.z<-7.02)train.carry=false;
+    else if(!train.jump)player.pos.x+=train.x-prevX;
+    train.jump=false;
+  }else train.jump=false;
   pushTrainCols();
   train.docked=(train.phase==='board'||train.phase==='stopover'||train.phase==='leaving');
 }
@@ -1942,12 +1944,14 @@ function updateTrainHud(){
     sub=ab?'DEPARTING ON SCHEDULE':'DOORS OPEN — '+Math.ceil(train.timer)+' SECONDS';
     cls=train.timer<7?'danger':train.timer<13?'warn':'';
   }else if(train.phase==='stopover'){
-    title=MAP.name;time=ab?'ABOARD':'--';sub=ab?'STEP OFF THE TRAIN':'SERVICE WAITING AT PLATFORM';
+    title=MAP.name;time=train.timer.toFixed(1)+'s';frac=clamp(train.timer/14,0,1);
+    sub=ab?'STEP OFF — DOORS CLOSE IN '+Math.ceil(train.timer)+'s':'TRAIN DEPARTS IN '+Math.ceil(train.timer)+'s';
+    cls=train.timer<5?'danger':train.timer<9?'warn':'';
   }else if(train.phase==='leaving'){
     title='DEPARTING';time='--';sub=ab?'NEXT STOP — UNKNOWN':'SERVICE CLEARED';
   }
   $('trainTitle').textContent=title;$('trainTime').textContent=time;$('trainSub').textContent=sub;
-  $('trainfill').style.transform='scaleX('+(train.phase==='board'?frac:0)+')';
+  $('trainfill').style.transform='scaleX('+((train.phase==='board'||train.phase==='stopover')?frac:0)+')';
   el.className='on '+cls;
 }
 /* ================= PARTICLES / TRACERS / DEBRIS ================= */
@@ -2791,8 +2795,14 @@ function movePlayer(dt){
       else if(m===dzl)player.pos.z=c.z0-r;else player.pos.z=c.z1+r;
     }
   }
-  player.pos.x=clamp(player.pos.x,MAP.x0+1.2,MAP.x1-1.2);
-  player.pos.z=clamp(player.pos.z,train.docked?-6.86:MAP.z0+.06,MAP.z1-.55);
+  if(train.carry&&train.phase!=='idle'){
+    /* riding: the carriage is the player's world frame until they step out */
+    player.pos.x=clamp(player.pos.x,train.x-8.6,train.x+8.6);
+    player.pos.z=clamp(player.pos.z,-6.86,MAP.z1-.55);
+  }else{
+    player.pos.x=clamp(player.pos.x,MAP.x0+1.2,MAP.x1-1.2);
+    player.pos.z=clamp(player.pos.z,train.docked?-6.86:MAP.z0+.06,MAP.z1-.55);
+  }
   if(keys.Space&&player.grounded&&!player.crouch){player.vel.y=5.1;player.grounded=false;sfx('step',0);}
   player.vel.y-=17*dt;
   player.pos.y+=player.vel.y*dt;
@@ -2875,7 +2885,7 @@ function updateHud(){
 function resetGame(){
   loadLevel((Math.random()*MAP_BUILDERS.length)|0);
   train.phase='idle';train.mode='board';train.x=-96;trainGroup.position.x=-96;
-  train.v=0;train.doors=0;train.doorTarget=0;train.docked=false;train.ride=false;train.timer=0;
+  train.v=0;train.spd=0;train.carry=false;train.jump=false;train.doors=0;train.doorTarget=0;train.docked=false;train.ride=false;train.timer=0;
   trainColStart=colliders.length;
   for(const d of doorPanels){d.l.position.x=d.lx;d.r.position.x=d.rx;d.lampMat.color.setHex(0xff4030);}
   setFade(0);
